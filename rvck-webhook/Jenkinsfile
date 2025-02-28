@@ -1,0 +1,50 @@
+properties([
+    pipelineTriggers([
+        GenericTrigger(
+            causeString: 'Generic Cause',
+            genericHeaderVariables: [[key: 'X-GitHub-Event', regexpFilter: '']],
+            genericVariables: [[defaultValue: '', key: 'payload', regexpFilter: '', value: '$']],
+            regexpFilterExpression: '',
+            regexpFilterText: '',
+            silentResponse: true,
+            printPostContent: true,
+            token: 'N7mDZmUqGPU$mXD',
+            tokenCredentialId: '',
+        )
+    ])
+])
+
+def add_label = 'kernel_building,lava_waiting'
+def remove_label = "kernel_build_succeed,kernel_build_failed,kernel_waiting,lava_checking,lava_check_pass,lava_check_fail"
+
+def all_keys = ["pr_id", "pr_id_url", "REPO", "testcase_url","dst_pr", "dst_pr_sha"]
+
+node('jenkins-agent-gh-docker') {
+    stage("checkout scm") {
+        cleanWs()
+        checkout scm
+    }
+
+    stage("parse webhook") {
+        withCredentials([string(credentialsId: 'rvck_gh_token', variable: 'GH_TOKEN')]) {
+            sh 'python3 rvck-webhook/run.py'
+        }
+    }
+    
+    def params = all_keys.findAll{ fileExists(it) }.collect {
+        string(name: it, value: readFile(it))
+    }
+    if(params.size()) {
+        stage("run kernel and gh_actions") {
+            build wait: true, job: 'gh_actions', parameters: [
+                string(name: 'REPO', value: readFile('REPO')),
+                string(name: 'ISSUE_ID', value: readFile('pr_id')),
+                string(name: 'COMMENT_CONTENT', value: '开始测试'),
+                string(name: 'ADD_LABEL', value: add_label),
+                string(name: "REMOVE_LABEL", value: remove_label),
+            ]
+
+            build wait: false, job: 'rvck-kernel-build', parameters: params
+        }
+    }
+}
