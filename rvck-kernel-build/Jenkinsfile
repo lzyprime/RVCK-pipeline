@@ -1,50 +1,78 @@
-properties([
-    parameters([
-        string(description: '指定所属仓库, 用于gh ... -R "$REPO"', name: 'REPO'), 
-        string(description: 'PR发起的ID号', name: 'pr_id'), 
-        string(description: 'PR发起的链接', name: 'pr_id_url'), 
-        string(defaultValue: 'lava-testcases/common/ltp/ltp.yaml', description: '需要执行的用例yaml 文件路径', name: 'testcase_url'), 
-        string(defaultValue: 'math', description: 'ltp测试时，指定测试套', name: 'testcase'), 
-        string(description: '目标PR分支', name: 'dst_pr'), 
-        string(description: '目标分支上的commit提交 哈希值', name: 'dst_pr_sha')
-    ])
-])
 
+node('jenkins-agent-docker-sg2042') {
 
+    def kernel_build_params
+    def lava_trigger_params
+    def script_content = ""
 
-node('jenkins-agent-docker-sg2042-102.58') {
     stage("checkout scm") {
         cleanWs()
-        checkout scm
+        node("jenkins-agent-lavacli-docker") {
+            cleanWs()
+            checkout scm
+            load('config.groovy')
+
+            kernel_build_params = kernel_build_params_keys.collect {
+                all_params[it]
+            }
+            lava_trigger_params = lava_trigger_params_keys.findAll {
+                                        params.containsKey(it)
+                                    }.collect {
+                                        string(name: it, value: params[it])
+                                    }
+            script_content = readFile 'rvck-kernel-build/run.sh'
+        }
     }
 
-    stage("build") {
-        timestamps {
-            try {
-                sh 'bash RVCI/RVCK/rvck-kernel-build/run.sh'
-                if (fileExists('evnironment.temp')) {
-                    build wait: true, job: 'gh_actions', parameters: [
+    def isAnyParams = params.size() != 0
+    
+
+    stage("properties") {
+        properties([
+            parameters(kernel_build_params),
+        ])
+    }
+    
+    if(isAnyParams) {
+       
+        stage("build") {
+            timestamps {
+                try {
+                    // 执行构建脚本
+                    sh script_content
+                    
+                    // 更新github状态
+                    build wait: false, job: 'gh_actions', parameters: [
                         string(name: 'REPO', value: REPO),
-                        string(name: 'ISSUE_ID', value: pr_id),
+                        string(name: 'ISSUE_ID', value: ISSUE_ID),
                         string(name: 'COMMENT_CONTENT', value: 'Kernel build success!'),
-                        string(name: 'ADD_LABEL', value: 'kernel_build_succeed,lava_checking'),
-                        string(name: "REMOVE_LABEL", value: kernel_build_failed,kernel_building,lava_waiting),
+                        string(name: 'SET_LABEL', value: 'kernel_build_succeed,lava_checking'),
+                    ]
+                    
+                    // 触发lava测试
+                    
+                    
+                    lava_trigger_params += [
+                        string(name: 'rootfs_download_url', value: readFile('rootfs_download_url')),
+                        string(name: 'kernel_download_url', value: readFile('kernel_download_url')),
+                    ]
+                    echo "lava_trigger_params: ${lava_trigger_params}"
+                    
+                    build wait: false, job: 'rvck-lava-trigger', parameters: lava_trigger_params
+                } catch (err) {
+                    
+                    build wait: false, job: 'gh_actions', parameters: [
+                        string(name: 'REPO', value: REPO),
+                        string(name: 'ISSUE_ID', value: ISSUE_ID),
+                        string(name: 'COMMENT_CONTENT', value: "Kernel build failed! log:${BUILD_URL}consoleFull"),
+                        string(name: 'SET_LABEL', value: 'kernel_build_failed'),
                     ]
 
-                    build wait: false, job: 'rvck-lava-trigger', parameters: [
-                        string(name: 'pr_id', value: pr_id),
-                        string(name: 'pr_id_url', value: pr_id_url),
-                        string(name: 'REPO', value: REPO),
-                        string(name: 'testcase_url', value: testcase_url),
-                        string(name: 'testcase', value: testcase),
-                        string(name: 'dst_pr', value: dst_pr),
-                        string(name: 'dst_pr_sha', value: dst_pr_sha)
-                    ]
+                    currentBuild.result = 'FAILURE'
+                    throw err
                 }
-            } catch (err) {
-                currentBuild.result = 'FAILURE'
-                throw err
             }
         }
     }
+    
 }

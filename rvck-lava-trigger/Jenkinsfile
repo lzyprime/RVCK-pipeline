@@ -1,53 +1,63 @@
 
-properties([
-    parameters([
-        string(description: '内核下载链接', name: 'kernel_download_url', trim: true), 
-        string(description: 'rootfs下载链接', name: 'rootfs_download_url', trim: true), 
-        string(description: '指定所属仓库, 用于gh ... -R "$REPO"', name: 'REPO', trim: true),
-        string(description: '需要评论的issue|pr id', name: 'ISSUE_ID', trim: true), 
-        string(description: '需要执行的用例yaml 文件路径', name: 'testcase_url', trim: true),
-        string(description: 'ltp测试时，指定测试套', name: 'testcase', trim: true),
-
-    ]),
-])
-
 node("jenkins-agent-lavacli-docker") {
     stage("checkout scm") {
-        cleanWs()
-        checkout scm
+        sh 'rm -rf pipeline_scm'
+        dir("pipeline_scm") {
+            checkout scm
+        }
     }
 
-    stage("init workspace") {
-        checkout scmGit(
-            userRemoteConfigs: [[url: 'https://github.com/RVCK-Project/lavaci.git']]
-            branches: [[name: 'main']],
-            extensions: [cloneOption(depth: 1, noTags: true, reference: '', shallow: true, timeout: 5)],
-        )
+    def isAnyParams = params.size() != 0
+
+    stage("properties") {
+        // 设置参数化构建
+        load('pipeline_scm/config.groovy')
+        properties([
+            parameters(lava_trigger_params_keys.collect {
+                all_params[it]
+            }),
+        ])
     }
-    
-    stage("lava check") {
-        timestamps {
-            try {
-                withCredentials([usernameColonPassword(credentialsId: 'dd2c86ed-f19e-445b-9fc8-5d2c2b23ecd2', variable: 'lava_admin_token')]) {
-                    sh 'bash RVCI/RVCK/rvck-lava-trigger/run.sh'
+
+    if(isAnyParams) {
+        // 执行构建
+        stage("init workspace") {
+            dir("lavaci") {
+                checkout scmGit(
+                    userRemoteConfigs: [[url: params.testcase_repo]],
+                    branches: [[name: 'main']],
+                    extensions: [cloneOption(depth: 1, noTags: true, reference: '', shallow: true, timeout: 5)],
+                )
+            }
+        }
+
+        stage("lava check") {
+            def lava_scripts = readFile 'pipeline_scm/rvck-lava-trigger/run.sh'
+            timestamps {
+                dir("lavaci") {
+                    try {
+                        withCredentials([usernameColonPassword(credentialsId: 'dd2c86ed-f19e-445b-9fc8-5d2c2b23ecd2', variable: 'lava_admin_token')]) {
+                            sh lava_scripts
+                        }
+                        build wait: false, job: 'gh_actions', parameters: [
+                            string(name: 'REPO', value: params.REPO),
+                            string(name: 'ISSUE_ID', value: params.ISSUE_ID),
+                            string(name: 'ADD_LABEL', value: 'lava_check_pass'),
+                            string(name: 'REMOVE_LABEL', value: label_group["lava"].join(",")),
+                            string(name: 'COMMENT_CONTENT', value: readFile('COMMENT_CONTENT')),
+                        ]
+                    } catch (err) {
+                        build wait: false, job: 'gh_actions', parameters: [
+                            string(name: 'REPO', value: params.REPO),
+                            string(name: 'ISSUE_ID', value: params.ISSUE_ID),
+                            string(name: 'ADD_LABEL', value: 'lava_check_fail'),
+                            string(name: 'REMOVE_LABEL', value: label_group["lava"].join(",")),
+                            string(name: 'COMMENT_CONTENT', value: readFile('COMMENT_CONTENT')),
+                        ]
+                        currentBuild.result = 'FAILURE'
+                        throw err
+                    }
                 }
-                build wait: true, job: 'gh_actions', parameters: [
-                    params.REPO,
-                    params.ISSUE_ID,
-                    string(name: 'ADD_LABEL', value: 'lava_check_pass'),
-                    string(name: 'REMOVE_LABEL', value: 'lava_check_fail,lava_checking'),
-                    string(name: 'COMMENT_CONTENT', value: readFile('COMMENT_CONTENT')),
-                ]
-            } catch (err) {
-                build wait: true, job: 'gh_actions', parameters: [
-                    params.REPO,
-                    params.ISSUE_ID,
-                    string(name: 'ADD_LABEL', value: 'lava_check_fail'),
-                    string(name: 'REMOVE_LABEL', value: 'lava_check_fail,lava_checking'),
-                    string(name: 'COMMENT_CONTENT', value: readFile('COMMENT_CONTENT')),
-                ]
-                currentBuild.result = 'FAILURE'
-                throw err
             }
         }
     }

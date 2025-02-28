@@ -1,14 +1,12 @@
-#！/usr/bin/env bash
+#!/usr/bin/env bash
 set -e
 set -x
 
 repo_name=$(echo ${REPO##h*/} | awk -F'.' '{print $1}')
 qemu_job_name=${repo_name}_pr_${ISSUE_ID}
-lava_template=lava-job-template/qemu/qemu-ltp.yaml
-device_type=$(yq .device_type ${lava_template})
-testcase_name=$(echo ${testcase_url} | awk -F'/' '{print $2}')
+device_type=$(yq .device_type "${lava_template}")
+testcase_name=$(echo "${testcase_url}" | awk -F'/' '{print $2}')
 testitem_name=${repo_name}_${testcase_name}_${device_type}
-testcase_repo=${GIT_URL}
 ssh_port=$(od -An -N2 -i /dev/urandom | awk -v min=10000 -v max=20000 '{print min + ($1 % (max - min + 1))}')
 lava_server=lava.oerv.ac.cn
 

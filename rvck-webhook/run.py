@@ -3,15 +3,57 @@
 import json
 import os
 
-all_keys = ["pr_id", "pr_id_url", "REPO", "testcase_url", 'dst_pr', "dst_pr_sha"]
 
-def write_properties_file(info:dict):
-    assert all([k in all_keys for k in info])
+def write_properties_file(info: dict):
     for k, v in info.items():
         if v is None:
             continue
         open(k, 'w').write(str(v))
 
+def parse_comment(comment: str):
+    """解析comment内容, /check"""
+
+    if not comment.strip().startswith("/check"):
+        print(comment.strip(), "| not found /check, ignore")
+        return None
+    
+    res = {}
+    if len("/check") == len(comment.strip()):
+        return res
+
+    import shlex
+    res = {
+        item[0]: item[1].strip("'\"") if len(item) == 2 else ""
+        for item in [
+            str(i).split('=',maxsplit=1)
+        for i in shlex.split(comment.strip()[6:])]
+    }
+    
+    # 检查文件是否存在
+    for k in ['lava_template','testcase_url',]:
+        if k in res and os.system(f'gh api repos/RVCK-Project/lavaci/contents/{res[k]}'):
+            raise Exception(f"{k}={res[k]} not found in RVCK-Project/lavaci")
+    
+    # 检查testcase是否支持
+    if 'testcase_url' in res and len(res['testcase']):
+        import yaml,json,base64
+        file_content = yaml.safe_load(base64.b64decode(json.loads(os.popen(f'gh api repos/RVCK-Project/lavaci/contents/{res["testcase_url"]}').read())["content"]).decode())
+        print("all support testcase:", file_content["params"]["TST_CMDFILES"])
+        if res['testcase'] not in file_content["params"]["TST_CMDFILES"]:
+            raise Exception(f"testcase={res['testcase']} not support")
+
+    for k, v in res.items():
+        print(f"{k} = '{v}'")
+    
+    return res
+
+def get_pr_fetch_ref(pr_id, repo):
+    """pr 源分支及目标分支，检查是否可合入mergeable """
+
+    mergeable = json.loads(os.popen(f"gh pr view {pr_id} --json mergeable -R {repo}").read())["mergeable"]
+    if mergeable != "MERGEABLE":
+        raise Exception(f"{repo}, pr={pr_id}, mergeable: {mergeable}, is not 'MERGEABLE'")
+    return f"pull/{pr_id}/head"
 
 def issue_comment(payload: dict):
     """pr|issue comment 触发"""
@@ -20,54 +62,62 @@ def issue_comment(payload: dict):
     if payload["action"] != "created":
         return
 
+    res = parse_comment(str(payload["comment"]["body"]))
+
+    if res is None:
+        return
+
+    res["REPO"] = payload["repository"]["clone_url"]
+    res["ISSUE_ID"] = payload["issue"]["number"]
+
+    # FETCH_REF
     if "pull_request" in payload["issue"]:  # pr
-        # 解析评论内容
-        comment_items = str(payload["comment"]["body"]).strip().split()
-        if comment_items[0] != "/check" or len(comment_items) > 2:
-            print("comment:", str(
-                payload["comment"]["body"]).strip(), "| ignore")
-            return
-        cmd_output = os.popen(f'gh pr view {payload["issue"]["number"]} --json baseRefOid,baseRefName -R {payload["repository"]["clone_url"]}').read()
-        print("gh pr view:", cmd_output)
-        pr_info = json.loads(cmd_output)
-        print(f"from pr comment")
-
-        write_properties_file({
-            "pr_id": payload["issue"]["number"],
-            "pr_id_url": payload["issue"]["pull_request"]["html_url"],
-            "REPO": payload["repository"]["clone_url"],
-            "testcase_url": comment_items[1] if len(comment_items) == 2 else None,
-            'dst_pr': pr_info["baseRefName"],
-            "dst_pr_sha": pr_info["baseRefOid"],
-        })
-
-    else:  # 普通issue
-        pass
+        res["FETCH_REF"] = get_pr_fetch_ref(res["ISSUE_ID"], res["REPO"])
+        # res["PATCH_URL"] = payload["issue"]["pull_request"]["patch_url"]
+    else:
+        if "fetch" not in res:
+            raise Exception("params:fetch is required")
+        res["FETCH_REF"] = res["fetch"]
+    
+    write_properties_file(res)
 
 
 def pull_request(payload: dict):
     # pr 创建
     if payload["action"] != "opened":
         return
-    comment_items = str(payload["pull_request"]["body"]).strip().split()
-    if comment_items[0] != "/check" or len(comment_items) > 2:
-        print("comment:", str(
-            payload["pull_request"]["body"]).strip(), "| ignore")
-        return
-
+    
     print("from pr opened")
 
-    write_properties_file({
-        "pr_id": payload["number"],
-        "pr_id_url": payload["pull_request"]["url"],
-        "REPO": payload["repository"]["clone_url"],
-        "testcase_url": comment_items[1] if len(comment_items) == 2 else None,
-        "dst_pr":payload["pull_request"]["base"]["sha"]["ref"],
-        "dst_pr_sha":payload["pull_request"]["base"]["sha"],
-    })
+    res = parse_comment(str(payload["pull_request"]["body"]))
+    if res is None:
+        res = {}
+
+    res["REPO"] = payload["repository"]["clone_url"]
+    res["ISSUE_ID"] = payload["number"]
+    res["FETCH_REF"] = get_pr_fetch_ref(res["ISSUE_ID"], res["REPO"])
+    # res["PATCH_URL"] = payload["patch_url"]
+
+    write_properties_file(res)
+
 
 def issues(payload: dict):
-    pass
+    # issue 创建
+    if payload["action"] != "opened":
+        return
+    
+    # 解析内容
+    res = parse_comment(str(payload["issue"]["body"]))
+    if res is None:
+        return
+
+    if not len(res.get("fetch", "")):
+        raise Exception("params:fetch is required")
+    res["REPO"] = payload["repository"]["clone_url"]
+    res["ISSUE_ID"] = payload["issue"]["number"]
+
+    write_properties_file(res)
+
 
 
 support_actions = {
@@ -86,4 +136,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    p= os.getenv("payload", "")
+    if len(p):
+        main()
+

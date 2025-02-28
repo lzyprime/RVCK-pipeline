@@ -1,23 +1,31 @@
 
-properties([
-    parameters([
-        string(description: '指定所属仓库, 用于gh ... -R "$REPO"', name: 'REPO', trim: true), 
-        string(description: '需要评论的issue|pr id', name: 'ISSUE_ID', trim: true), 
-        text(description: '评论内容, 用于 gh issue $ISSUE_ID -b "$COMMENT_CONTENT"', name: 'COMMENT_CONTENT'), 
-        string(description: '添加标签，多个以英文逗号 \',\' 分割 ', name: 'ADD_LABEL', trim: true), 
-        string(description: '添加标签，多个以英文逗号 \',\' 分割 ', name: 'REMOVE_LABEL', trim: true)
-    ]),
-])
-
 node('jenkins-agent-gh-docker') {
-    stage("checkout scm") {
+    stage('checkout scm') {
         cleanWs()
         checkout scm
     }
 
-    stage("gh actions") {
-        withCredentials([string(credentialsId: 'rvck_gh_token', variable: 'GH_TOKEN')]) {
-            sh 'bash RVCI/RVCK/gh_actions/run.sh'
+    def isAnyParams = params.size() != 0
+
+    stage("properties") {
+        load('config.groovy')
+        properties([
+            parameters(gh_actions_params_keys.collect {
+                all_params[it]
+            }),
+        ])
+    }
+
+    if(isAnyParams) {
+        stage('gh actions') {
+            withCredentials([string(credentialsId: 'rvck_gh_token', variable: 'GH_TOKEN')]) {
+                def all_label_str = all_label.join(',')
+                withEnv([
+                    "CONFIG_all_labels=${all_label_str}"
+                ]) {
+                    sh 'bash gh_actions/run.sh'
+                }
+            }
         }
     }
 }
