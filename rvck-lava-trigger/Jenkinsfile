@@ -35,6 +35,7 @@ node("jenkins-agent-lavacli-docker") {
             def lava_scripts = readFile 'pipeline_scm/rvck-lava-trigger/run.sh'
             timestamps {
                 dir("lavaci") {
+                    sh 'rm -rf COMMENT_CONTENT'
                     try {
                         withCredentials([usernameColonPassword(credentialsId: 'dd2c86ed-f19e-445b-9fc8-5d2c2b23ecd2', variable: 'lava_admin_token')]) {
                             sh lava_scripts
